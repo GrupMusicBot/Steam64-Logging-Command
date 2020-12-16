@@ -1,18 +1,12 @@
 import discord
-import random
 import time
 import pymongo
-import zlib
 import requests
-from bs4 import BeautifulSoup
 from pymongo import MongoClient
-from datetime import datetime, timedelta
-from redbot.cogs.mod import Mod as ModClass
-from redbot.core import Config, checks, commands, modlog
+from datetime import datetime
+from redbot.core import Config, checks, commands
 from redbot.core.commands.converter import TimedeltaConverter
-from redbot.core.utils.chat_formatting import humanize_list, humanize_timedelta
-from redbot.core.utils.predicates import MessagePredicate
-import json
+import socket
 
 DATABASE_URL_INCOMPLETE = "Database URL is Incorrect, do `[p]logsettings` to set and view the settings\n[p] is the prefix you have set"
 WARNING_COLLECTION_INCOMPLETE = "Warning Collection is Incorrect, do `[p]logsettings` to set and view the settings\n[p] is the prefix you have set"
@@ -23,23 +17,26 @@ PLAYERLOGS_COLLECTION_INCOMPLETE = "Player Collection is Incorrect, do `[p]logse
 DATABASE_CLUSTER_INCOMPLETE = "Database Cluster is Incorrect, do `[p]logsettings` to set and view the settings\n[p] is the prefix you have set"
 STEAMAPIKEY_INCORRECT = "SteamAPI Key is incorrect, do `[p]logsettings` to set and view the settings\n[p] is the prefix you have set"
 
+
 class Logging(commands.Cog):
     """Logs a players punishments"""
 
     def __init__(self, bot):
         self.config = Config.get_conf(self, identifier=1072001)
         default_guild = {
-        "mongoDB_URL" : "[None]",
-        "Warning_Collection" : "[None]",
-        "WarnLog_Collection" : "[None]",
-        "Mute_Collection" : "[None]" ,
-        "MuteLog_Collection" : "[None]",
-        "PlayerLogs_Collection" : "[None]",
-        "doubledPoints" : False,
-        "Cluster" : "[None]",
-        "steamkey" : "[None]",
-        "ModRole" : 0,
-        "adminRole" : 0}
+            "mongoDB_URL": "[None]",
+            "Warning_Collection": "[None]",
+            "WarnLog_Collection": "[None]",
+            "Mute_Collection": "[None]",
+            "MuteLog_Collection": "[None]",
+            "PlayerLogs_Collection": "[None]",
+            "doubledPoints": False,
+            "Cluster": "[None]",
+            "steamkey": "[None]",
+            "storageServerIP" : "[None]",
+            "externalStorageEnabled" : False,
+            "ModRole": 0,
+            "adminRole": 0}
         self.config.register_guild(**default_guild)
         self.bot = bot
 
@@ -49,11 +46,11 @@ class Logging(commands.Cog):
         pass
 
     @log.command(name="profile", aliases=["p"])
-    async def log_points(self, ctx: commands.Context, id: int, RAW : bool = ""):
+    async def log_points(self, ctx: commands.Context, id: int, RAW: bool = False):
         """View a players points for both warnings and mutes
 
         Additonal Syntax: `$log profile <Steam64ID>`"""
-        #Load the Mongo_URL Settings, if they are none, then display an error
+        # Load the Mongo_URL Settings, if they are none, then display an error
         mongo_url = await self.config.guild(ctx.guild).mongoDB_URL()
         if "None" in mongo_url:
             await ctx.send(DATABASE_URL_INCOMPLETE)
@@ -93,32 +90,38 @@ class Logging(commands.Cog):
 
         startTimeCommand = time.strftime('%X')
 
-        link = (f"http://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key={apiToken}&steamids={id}")
+        if len(str(id)) == 17:
+            # This is a Steam64ID
+            link = (f"http://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key={apiToken}&steamids={id}")
+            r = requests.get(link)
+            data = r.json()
+            dataResponse = data['response']['players'][0]
+            avatarURL = (dataResponse['avatarfull'])
+            personaname = (dataResponse['personaname'])
+            profileURL = (dataResponse['profileurl'])
+            pass
+        elif len(str(id)) == 18:
+            # This is a DiscordID
+            avatarURL = "https://www.shitpostbot.com/resize/585/400?img=%2Fimg%2Fsourceimages%2Fdefault-discord-icon-5b254285e1034.png";
+            personaname = "Discord User"
+            profileURL = "None"
+            pass
 
-        r = requests.get(link)
-        data = r.json()
-
-        dataResponse = data['response']['players'][0]
-
-        avatarURL = (dataResponse['avatarfull'])
-        personaname = (dataResponse['personaname'])
-        profileURL = (dataResponse['profileurl'])
-
-        results = waCollection.find({"_id":id})
-        muteResults = muCollection.find({"_id":id})
-        playerResults = plCollection.find({"_id":id})
+        results = waCollection.find({"_id": id})
+        muteResults = muCollection.find({"_id": id})
+        playerResults = plCollection.find({"_id": id})
 
         try:
             embed = discord.Embed(
-            title=(f"{personaname}'s Profile"),
-            description = 'Here is the information about the user',
-            colour = discord.Colour.green())
+                title=(f"{personaname}'s Profile"),
+                description='Here is the information about the user',
+                colour=discord.Colour.green())
             for result in results:
                 steamID = (result["_id"])
                 warnPoints = (result["MasterWarnPoints"])
                 warnReason = (result["FirstWarnReason"])
 
-                embed.add_field(name='Steam64 ID', value=steamID, inline=False)
+                embed.add_field(name='ID', value=steamID, inline=False)
                 embed.add_field(name='Warning Points', value=warnPoints, inline=True)
                 embed.add_field(name='Warning Reason', value=warnReason, inline=True)
             for muteResult in muteResults:
@@ -141,14 +144,14 @@ class Logging(commands.Cog):
             await ctx.send(embed=embed)
         except pymongo.errors.PyMongoError:
             embed = discord.Embed(
-            title='User Profile not found',
-            description = 'User does not have any warnings!',
-            colour = discord.Colour.green())
+                title='User Profile not found',
+                description='User does not have any warnings!',
+                colour=discord.Colour.green())
             await ctx.send(embed=embed)
 
     @log.command(name="warn", aliases=["warning"])
     @checks.mod_or_permissions(manage_messages=True)
-    async def log_warn(self, ctx: commands.Context, id: int, warnPoints:int, * , warnReason: str):
+    async def log_warn(self, ctx: commands.Context, id: int, warnPoints: int, *, warnReason: str):
         """Log your warnings"""
         mongo_url = await self.config.guild(ctx.guild).mongoDB_URL()
         if "None" in mongo_url:
@@ -180,6 +183,8 @@ class Logging(commands.Cog):
             await ctx.send(STEAMAPIKEY_INCORRECT)
             return
         #######################################################################
+        getStorageIP = await self.config.guild(ctx.guild).storageServerIP()
+        getStorageEnabled = await self.config.guild(ctx.guild).externalStorageEnabled()
 
         cluster = MongoClient(mongo_url)
         db = cluster[getCluster]
@@ -189,36 +194,59 @@ class Logging(commands.Cog):
 
         startTimeCommand = time.strftime('%X')
 
+        if '|' in warnReason:
+            await ctx.send("Cannot have '|' in your reason")
+            return
+
         author = ctx.author
         author = ctx.author.id
-        link = (f"http://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key={apiToken}&steamids={id}")
-        r = requests.get(link)
-        data = r.json()
-        dataResponse = data['response']['players'][0]
-        personaname = (dataResponse['personaname'])
+        if len(str(id)) == 17:
+            link = (f"http://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key={apiToken}&steamids={id}")
+            r = requests.get(link)
+            data = r.json()
+            dataResponse = data['response']['players'][0]
+            personaname = (dataResponse['personaname'])
+            pass
+        elif len(str(id)) == 18:
+            personaname = "Unknown Discord User";
+            pass
 
         try:
-            createWarnLog = {"_id":id, "MasterWarnPoints":warnPoints, "FirstWarnReason": warnReason}
-            createWarning = {"_id":id, "Moderator":author}
+            createWarnLog = {"_id": id, "MasterWarnPoints": warnPoints, "FirstWarnReason": warnReason}
+            createWarning = {"_id": id, "Moderator": author}
             waCollection.insert_one(createWarnLog)
             wCollection.insert_one(createWarning)
             embed = discord.Embed(
-            title='Warning Success',
-            description = f'You have warned {personaname}!',
-            colour = discord.Colour.green())
+                title='Warning Success',
+                description=f'You have warned {personaname}!',
+                colour=discord.Colour.green())
             endTimeCommand = time.strftime('%X')
             finalTimeString = (startTimeCommand + "-->" + endTimeCommand)
             embed.set_footer(text=finalTimeString)
             await ctx.send(embed=embed)
+            if getStorageEnabled:
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    server_address = (getStorageIP, 7500)
+                    sock.connect(server_address)
+                    try:
+                        tcpMessage = f"LOG_WARNING-{id}|{personaname}|{warnPoints}|{warnReason}|{datetime.today().strftime('%Y-%m-%d')}|{ctx.author}"
+                        sock.sendall(tcpMessage.encode('utf-8'))
+                    finally:
+                        sock.close()
+                except:
+                    return
+            else:
+                pass
         except pymongo.errors.DuplicateKeyError:
-            AddWarning = waCollection.update_one({"_id":id}, {"$inc":{"MasterWarnPoints":warnPoints}})
-            UpdateReason = waCollection.update_one({"_id":id}, {"$set":{"FirstWarnReason": warnReason}})
+            AddWarning = waCollection.update_one({"_id": id}, {"$inc": {"MasterWarnPoints": warnPoints}})
+            UpdateReason = waCollection.update_one({"_id": id}, {"$set": {"FirstWarnReason": warnReason}})
             embed = discord.Embed(
-            title='Warning Success',
-            description = f'{personaname} had a previous warning, so the points have been updated!',
-            colour = discord.Colour.green())
+                title='Warning Success',
+                description=f'{personaname} had a previous warning, so the points have been updated!',
+                colour=discord.Colour.green())
 
-            warnResults = waCollection.find({"_id":id})
+            warnResults = waCollection.find({"_id": id})
             for result in warnResults:
                 warnPoints = (result["MasterWarnPoints"])
                 if warnPoints >= 10:
@@ -237,13 +265,28 @@ class Logging(commands.Cog):
             finalTimeString = (startTimeCommand + "-->" + endTimeCommand)
             embed.set_footer(text=finalTimeString)
             await ctx.send(embed=embed)
+            if getStorageEnabled:
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    server_address = (getStorageIP, 7500)
+                    sock.connect(server_address)
+                    try:
+                        tcpMessage = f"LOG_WARNING-{id}|{personaname}|{warnPoints}|{warnReason}|{datetime.today().strftime('%Y-%m-%d')}|{ctx.author}"
+                        sock.sendall(tcpMessage.encode('utf-8'))
+                    finally:
+                        sock.close()
+                except:
+                    return
+            else:
+                pass
+
         except ValueError:
             await ctx.send("Are you forgetting the users warning points?")
             return
 
     @log.command(name="delete", aliases=["del"])
     @checks.mod_or_permissions(manage_messages=True)
-    async def log_delete(self, ctx: commands.Context, Type: str, id:int):
+    async def log_delete(self, ctx: commands.Context, Type: str, id: int):
         """Delete a user's information
 
         Additonal Syntax: `$log delete <(warn/mute/mic)> <Steam64ID>`"""
@@ -295,44 +338,44 @@ class Logging(commands.Cog):
                 muteDelete = mCollection.delete_one({"_id": id})
                 muteLogDelete = muCollection.delete_one({"_id": id})
                 embed = discord.Embed(
-                title='Mute Deleted',
-                description = 'Players mute information has been deleted!',
-                colour = discord.Colour.green())
+                    title='Mute Deleted',
+                    description='Players mute information has been deleted!',
+                    colour=discord.Colour.green())
                 await ctx.send(embed=embed)
             except pymongo.errors.PyMongoError:
                 embed = discord.Embed(
-                title='Mute Deletion Failed',
-                description = 'Ask a developer for help!',
-                colour = discord.Colour.red())
+                    title='Mute Deletion Failed',
+                    description='Ask a developer for help!',
+                    colour=discord.Colour.red())
                 await ctx.send(embed=embed)
         elif Type == "warn":
             try:
                 warnDelete = wCollection.delete_one({"_id": id})
-                warningLogDelete = waCollection.delete_one({"_id":id})
+                warningLogDelete = waCollection.delete_one({"_id": id})
                 embed = discord.Embed(
-                title='Warning Deleted',
-                description = 'Players Warning information has been deleted!',
-                colour = discord.Colour.green())
+                    title='Warning Deleted',
+                    description='Players Warning information has been deleted!',
+                    colour=discord.Colour.green())
                 await ctx.send(embed=embed)
             except:
                 embed = discord.Embed(
-                title='Warning Deletion Failed',
-                description = 'Ask a developer for help!',
-                colour = discord.Colour.red())
+                    title='Warning Deletion Failed',
+                    description='Ask a developer for help!',
+                    colour=discord.Colour.red())
                 await ctx.send(embed=embed)
         elif Type == "bans" or Type == "ban":
             try:
-                banDelete = PLCollection.delete_one({"_id" : id})
+                banDelete = PLCollection.delete_one({"_id": id})
                 embed = discord.Embed(
-                title='Ban Deleted',
-                description = 'Players Ban information has been deleted!',
-                colour = discord.Colour.green())
+                    title='Ban Deleted',
+                    description='Players Ban information has been deleted!',
+                    colour=discord.Colour.green())
                 await ctx.send(embed=embed)
             except:
                 embed = discord.Embed(
-                title='Ban Deletion Failed',
-                description = 'Ask a developer for help!',
-                colour = discord.Colour.red())
+                    title='Ban Deletion Failed',
+                    description='Ask a developer for help!',
+                    colour=discord.Colour.red())
                 await ctx.send(embed=embed)
         else:
             await ctx.send("That doesn't exist!")
@@ -340,7 +383,7 @@ class Logging(commands.Cog):
 
     @log.command(name="mute", aliases=["mic"])
     @checks.mod_or_permissions(manage_messages=True)
-    async def log_mute(self, ctx: commands.Context, id : int, mutePoints : int, * ,muteReason : str):
+    async def log_mute(self, ctx: commands.Context, id: int, mutePoints: int, *, muteReason: str):
         """Log your mutes"""
         mongo_url = await self.config.guild(ctx.guild).mongoDB_URL()
         if "None" in mongo_url:
@@ -382,6 +425,8 @@ class Logging(commands.Cog):
             await ctx.send(STEAMAPIKEY_INCORRECT)
             return
         #######################################################################
+        getStorageIP = await self.config.guild(ctx.guild).storageServerIP()
+        getStorageEnabled = await self.config.guild(ctx.guild).externalStorageEnabled()
 
         cluster = MongoClient(mongo_url)
         db = cluster[getCluster]
@@ -389,60 +434,82 @@ class Logging(commands.Cog):
         muCollection = db[getMuteLog]
         plCollection = db[getPlayerLog]
 
-        results = muCollection.find({"_id":id})
+        results = muCollection.find({"_id": id})
         for muResult in results:
             oldReason = (muResult['muteReason'])
 
         startTimeCommand = time.strftime('%X')
 
+        if '|' in muteReason:
+            await ctx.send("Cannot have '|' in your reason")
+            return
+
         author = ctx.author.id
-        link = (f"http://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key={apiToken}&steamids={id}")
-        r = requests.get(link)
-        data = r.json()
-        dataResponse = data['response']['players'][0]
-        personaname = (dataResponse['personaname'])
+        if len(str(id)) == 17:
+            link = (f"http://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key={apiToken}&steamids={id}")
+            r = requests.get(link)
+            data = r.json()
+            dataResponse = data['response']['players'][0]
+            personaname = (dataResponse['personaname'])
+            pass
+        elif len(str(id)) == 18:
+            personaname = "Unknown Discord User";
+            pass
 
         if mutePoints > 10:
             embed = discord.Embed(
-            title='Mute Failure',
-            description = 'You cannot enter more than 10 points at a time',
-            colour = discord.Colour.red())
+                title='Mute Failure',
+                description='You cannot enter more than 10 points at a time',
+                colour=discord.Colour.red())
             await ctx.send(embed=embed)
             return
 
-
         try:
-            createMuteLog = {"_id":id, "MasterMutePoints":mutePoints, "muteReason":muteReason}
-            createMute = {"_id":id, "Moderator" : author}
+            createMuteLog = {"_id": id, "MasterMutePoints": mutePoints, "muteReason": muteReason}
+            createMute = {"_id": id, "Moderator": author}
             MuteLog = muCollection.insert_one(createMuteLog)
             Muting = mCollection.insert_one(createMute)
             embed = discord.Embed(
-            title='Mute Success',
-            description = f'{personaname} has been logged',
-            colour = discord.Colour.green())
+                title='Mute Success',
+                description=f'{personaname} has been logged',
+                colour=discord.Colour.green())
             endTimeCommand = time.strftime('%X')
             finalTimeString = (startTimeCommand + "-->" + endTimeCommand)
             embed.set_footer(text=finalTimeString)
             await ctx.send(embed=embed)
+            if getStorageEnabled:
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    server_address = (getStorageIP, 7500)
+                    sock.connect(server_address)
+                    try:
+                        tcpMessage = f"LOG_MUTE-{id}|{personaname}|{mutePoints}|{muteReason}|{datetime.today().strftime('%Y-%m-%d')}|{ctx.author}"
+                        sock.sendall(tcpMessage.encode('utf-8'))
+                    finally:
+                        sock.close()
+                except:
+                    return
+            else:
+                pass
         except pymongo.errors.DuplicateKeyError:
             if 'micspam' in oldReason.lower() and doubledPoints is True:
                 embed = discord.Embed(
-                title='Mute Success',
-                description = f'{personaname} had a previous mute, for the same reason. The Points have been Doubled!',
-                colour = discord.Colour.green()
+                    title='Mute Success',
+                    description=f'{personaname} had a previous mute, for the same reason. The Points have been Doubled!',
+                    colour=discord.Colour.green()
                 )
                 mutePoints = mutePoints * 2
-                AddMute = muCollection.update_one({"_id":id}, {"$inc":{"MasterMutePoints":mutePoints}})
+                AddMute = muCollection.update_one({"_id": id}, {"$inc": {"MasterMutePoints": mutePoints}})
             else:
                 embed = discord.Embed(
-                title='Mute Success',
-                description = f'{personaname} had a previous mute, so they have been updated',
-                colour = discord.Colour.green()
+                    title='Mute Success',
+                    description=f'{personaname} had a previous mute, so they have been updated',
+                    colour=discord.Colour.green()
                 )
-                AddMute = muCollection.update_one({"_id":id}, {"$inc":{"MasterMutePoints":mutePoints}})
-            EditReason = muCollection.update_one({"_id":id}, {"$set":{"muteReason":muteReason}})
+                AddMute = muCollection.update_one({"_id": id}, {"$inc": {"MasterMutePoints": mutePoints}})
+            EditReason = muCollection.update_one({"_id": id}, {"$set": {"muteReason": muteReason}})
 
-            muteResults = muCollection.find({"_id":id})
+            muteResults = muCollection.find({"_id": id})
             for result in muteResults:
                 mutePoints = (result["MasterMutePoints"])
                 if mutePoints >= 10:
@@ -459,10 +526,21 @@ class Logging(commands.Cog):
             finalTimeString = (startTimeCommand + "-->" + endTimeCommand)
             embed.set_footer(text=finalTimeString)
             await ctx.send(embed=embed)
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                server_address = (getStorageIP, 7500)
+                sock.connect(server_address)
+                try:
+                    tcpMessage = f"LOG_MUTE-{id}|{personaname}|{mutePoints}|{muteReason}|{datetime.today().strftime('%Y-%m-%d')}|{ctx.author}"
+                    sock.sendall(tcpMessage.encode('utf-8'))
+                finally:
+                    sock.close()
+            except:
+                return
 
     @log.command(name="ban")
     @checks.mod_or_permissions(manage_messages=True)
-    async def log_ban(self, ctx: commands.Context, id : int, Duration : TimedeltaConverter, * , Ban_Reason : str = ""):
+    async def log_ban(self, ctx: commands.Context, id: int, Duration: TimedeltaConverter, *, Ban_Reason: str = ""):
         """Give the player additional information"""
         mongo_url = await self.config.guild(ctx.guild).mongoDB_URL()
         if "None" in mongo_url:
@@ -479,6 +557,12 @@ class Logging(commands.Cog):
             await ctx.send(PLAYERLOGS_COLLECTION_INCOMPLETE)
             return
         #######################################################################
+        apiToken = await self.config.guild(ctx.guild).steamkey()
+        if "None" in apiToken:
+            await ctx.send(STEAMAPIKEY_INCORRECT)
+            return
+        getStorageIP = await self.config.guild(ctx.guild).storageServerIP()
+        getStorageEnabled = await self.config.guild(ctx.guild).externalStorageEnabled()
 
         cluster = MongoClient(mongo_url)
         db = cluster[getCluster]
@@ -487,30 +571,83 @@ class Logging(commands.Cog):
         authorID = ctx.author.id
         author = ctx.author
 
+        if len(str(id)) == 17:
+            link = (f"http://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key={apiToken}&steamids={id}")
+            r = requests.get(link)
+            data = r.json()
+            dataResponse = data['response']['players'][0]
+            personaname = (dataResponse['personaname'])
+            pass
+        elif len(str(id)) == 18:
+            personaname = "Unknown Discord User";
+            pass
+
         try:
-            AddInformation = {"_id":id, "BanReason" : Ban_Reason, "ModeratorID" : authorID, "Moderator" : str(author), "TimesBanned" : 1, "MostRecentBanLength" : str(Duration)}
+            AddInformation = {"_id": id, "BanReason": Ban_Reason, "ModeratorID": authorID, "Moderator": str(author),
+                              "TimesBanned": 1, "MostRecentBanLength": str(Duration)}
             PlayerInfo = plCollection.insert_one(AddInformation)
             embed = discord.Embed(
-            title='Ban Logged!',
-            description = 'Ban has been logged successfully!',
-            colour = discord.Colour.green()
+                title='Ban Logged!',
+                description='Ban has been logged successfully!',
+                colour=discord.Colour.green()
             )
             await ctx.send(embed=embed)
+            if getStorageEnabled:
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    server_address = (getStorageIP, 7500)
+                    sock.connect(server_address)
+                    try:
+                        tcpMessage = f"LOG_BAN-{id}|{personaname}|{Duration}|{Ban_Reason}|{datetime.today().strftime('%Y-%m-%d')}|{ctx.author}"
+                        sock.sendall(tcpMessage.encode('utf-8'))
+                    finally:
+                        sock.close()
+                except:
+                    return
+            else:
+                pass
         except pymongo.errors.DuplicateKeyError:
-            UpdateReason = plCollection.update_one({"_id":id}, {"$set":{"BanReason":Ban_Reason, "ModeratorID" : authorID, "Moderator" : str(author), "MostRecentBanLength" : str(Duration)}})
-            UpdateShit = plCollection.update_one({"_id" : id}, {"$inc":{"TimesBanned" : 1}})
+            UpdateReason = plCollection.update_one({"_id": id}, {
+                "$set": {"BanReason": Ban_Reason, "ModeratorID": authorID, "Moderator": str(author),
+                         "MostRecentBanLength": str(Duration)}})
+            UpdateShit = plCollection.update_one({"_id": id}, {"$inc": {"TimesBanned": 1}})
             embed = discord.Embed(
-            title='Ban Logged!',
-            description = 'User had a previous ban before, updated reason',
-            colour = discord.Colour.green()
+                title='Ban Logged!',
+                description='User had a previous ban before, updated reason',
+                colour=discord.Colour.green()
             )
             await ctx.send(embed=embed)
+            if getStorageEnabled:
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    server_address = (getStorageIP, 7500)
+                    sock.connect(server_address)
+                    try:
+                        tcpMessage = f"LOG_BAN-{id}|{personaname}|{Duration}|{Ban_Reason}|{datetime.today().strftime('%Y-%m-%d')}|{ctx.author}"
+                        sock.sendall(tcpMessage.encode('utf-8'))
+                    finally:
+                        sock.close()
+                except:
+                    return
+            else:
+                pass
 
     @log.command(name="help")
     @checks.mod_or_permissions(manage_messages=True)
     async def log_help(self, ctx):
-        """More Indepth look into the commands"""
-        await ctx.send("**Logging Command Help**\n\n __**Logging a warning**__\n You can log a warning with the command `$log warn <SteamID> <Points> <Reason>` Here is an example below: \n ```$log warn 76561198146812074 1 Killing Cuffed D-Class``` \n\n __**Logging a mute**__\nYou can log a mute with the following command: `$log mute <SteamID> <Points> <Reason>` Here is an example below:\n```$log mute 76561198146812074 2 Earrape in DeadChat```\n\n __**Deleting a Warning or Mute**__\nIf you ever need to delete a user's Warning or Mute History: `$log delete <mute/warn> <SteamID>` Here is an example of that:\n```$log delete mute 76561198146812074```\n\n __**Logging Bans**__\nWhen logging bans, you use this command: `$log ban <SteamID> <Time> <Reason>` Here is an example below:\n```$log ban 76561198146812074 1d Closing doors on teammates even after warning```\n\n __**Viewing a Players Profile**__\nTo view a players previous Warning and Mute history use the following command: `$log profile <SteamID>`Here is example below:\n```$log profile 76561198146812074```\n\n")
+        """More In-depth look into the commands"""
+        await ctx.send("**Logging Command Help**\n\n __**Logging a warning**__\n You can log a warning with the "
+                       "command `$log warn <SteamID> <Points> <Reason>` Here is an example below: \n ```$log warn "
+                       "76561198146812074 1 Killing Cuffed D-Class``` \n\n __**Logging a mute**__\nYou can log a mute "
+                       "with the following command: `$log mute <SteamID> <Points> <Reason>` Here is an example "
+                       "below:\n```$log mute 76561198146812074 2 Earrape in DeadChat```\n\n __**Deleting a Warning or "
+                       "Mute**__\nIf you ever need to delete a user's Warning or Mute History: `$log delete "
+                       "<mute/warn> <SteamID>` Here is an example of that:\n```$log delete mute "
+                       "76561198146812074```\n\n __**Logging Bans**__\nWhen logging bans, you use this command: `$log "
+                       "ban <SteamID> <Time> <Reason>` Here is an example below:\n```$log ban 76561198146812074 1d "
+                       "Closing doors on teammates even after warning```\n\n __**Viewing a Players Profile**__\nTo "
+                       "view a players previous Warning and Mute history use the following command: `$log profile "
+                       "<SteamID>`Here is example below:\n```$log profile 76561198146812074```\n\n")
 
     @log.command(name="amount")
     @checks.mod_or_permissions(manage_messages=True)
@@ -557,15 +694,15 @@ class Logging(commands.Cog):
         PLMod = plCollection.find().count()
 
         embed = discord.Embed(
-        title='Amounts of Warns/Mutes/Bans!',
-        description = 'Here it is',
-        colour = discord.Colour.green()
+            title='Amounts of Warns/Mutes/Bans!',
+            description='Here it is',
+            colour=discord.Colour.green()
         )
         embed.add_field(name='Warnings', value=WLMod, inline=False)
         embed.add_field(name='Mutes', value=MLMod, inline=False)
         embed.add_field(name='Bans', value=PLMod, inline=False)
         endTimeCommand = time.strftime('%X')
-        finalTime = (startTimeCommand + " --> "+ endTimeCommand)
+        finalTime = (startTimeCommand + " --> " + endTimeCommand)
         embed.set_footer(text=finalTime)
         await ctx.send(embed=embed)
 
@@ -597,7 +734,10 @@ class Logging(commands.Cog):
         if "None" in getPlayerLog:
             await ctx.send(PLAYERLOGS_COLLECTION_INCOMPLETE)
             return
-        #######################################################################
+        ######################################################################
+
+
+
         cluster = MongoClient(mongo_url)
         db = cluster[getCluster]
         WLCollection = db[getWarnColl]
@@ -608,15 +748,15 @@ class Logging(commands.Cog):
 
         DiscordID = user.id
 
-        WLAmount = WLCollection.find({"Moderator" : DiscordID}).count()
+        WLAmount = WLCollection.find({"Moderator": DiscordID}).count()
         MLAmount = MLCollection.find({"Moderator": DiscordID}).count()
-        PLAmount = PLCollection.find({"ModeratorID" : DiscordID}).count()
+        PLAmount = PLCollection.find({"ModeratorID": DiscordID}).count()
 
         try:
             embed = discord.Embed(
-            title='Amount of Warnings',
-            description = 'Here it is',
-            colour = discord.Colour.green()
+                title='Amount of Warnings',
+                description='Here it is',
+                colour=discord.Colour.green()
             )
             embed.add_field(name='Warnings', value=WLAmount, inline=False)
             embed.add_field(name='Mutes', value=MLAmount, inline=False)
@@ -627,19 +767,45 @@ class Logging(commands.Cog):
 
     @commands.group(name="logsettings")
     @checks.admin()
-    async def logsettings(self , ctx):
+    async def logsettings(self, ctx):
         """Edit the Logging Commands for Roles and Users"""
         pass
 
     @logsettings.group(name="misc")
     @checks.admin()
-    async def logsettings_misc(self , ctx):
+    async def logsettings_misc(self, ctx):
         """Misc. Settings for Logging"""
         pass
 
+    @logsettings.group(name="storage")
+    @checks.admin()
+    async def logsettings_storage(self, ctx):
+        """Change the Storage Settings of Logs (Optional)"""
+        pass
+
+    @logsettings_storage.command(name="ip")
+    @checks.admin()
+    async def storage_ip(self, ctx, IP : str):
+        """Set the IP of the TCP Server"""
+        try:
+            await self.config.guild(ctx.guild).storageServerIP.set(IP)
+            await ctx.send(f"IP has been set to {IP}")
+        except (ValueError, KeyError, AttributeError):
+            await ctx.send("There was an error setting the IP, double check and try again!")
+
+    @logsettings_storage.command(name="enabled")
+    @checks.admin()
+    async def storage_enabled(self, ctx : commands.Context, Enabled : bool):
+        """Enable or Disable the Storage"""
+        try:
+            await self.config.guild(ctx.guild).externalStorageEnabled.set(Enabled)
+            await ctx.send(f"The Storage Server has been set to {Enabled}\nBe sure to check the IP")
+        except (ValueError, KeyError, AttributeError):
+            await ctx.send("There was an error setting the IP, double check and try again!")
+
     @logsettings_misc.command(name="steamapikey")
     @checks.admin()
-    async def steamapikey(self , ctx : commands.Context, APIKey : str):
+    async def steamapikey(self, ctx: commands.Context, APIKey: str):
         """Set the API Key for Steam
         You can get one here : https://steamcommunity.com/dev/apikey"""
         if len(APIKey) < 32:
@@ -653,7 +819,7 @@ class Logging(commands.Cog):
 
     @logsettings_misc.command(name="doubledpoints")
     @checks.admin()
-    async def doublepoints(self , ctx : commands.Context, Enabled : bool):
+    async def doublepoints(self, ctx: commands.Context, Enabled: bool):
         """Double the Points if a offender has the same offence as the new reason"""
         try:
             await self.config.guild(ctx.guild).doubledPoints.set(Enabled)
@@ -663,13 +829,13 @@ class Logging(commands.Cog):
 
     @logsettings.group(name="database")
     @checks.admin()
-    async def logsettings_database(self , ctx):
+    async def logsettings_database(self, ctx):
         """Set the settings for Logs and Entering it into the Database"""
         pass
 
     @logsettings_database.command(name="url")
     @checks.admin()
-    async def logsettings_database_url(self , ctx : commands.Context, URL : str):
+    async def logsettings_database_url(self, ctx: commands.Context, URL: str):
         """Set the MongoDB URL"""
         try:
             await self.config.guild(ctx.guild).mongoDB_URL.set(URL)
@@ -679,7 +845,7 @@ class Logging(commands.Cog):
 
     @logsettings_database.command(name="warningcollection")
     @checks.admin()
-    async def logsettings_database_warningcollection(self , ctx : commands.Context, Name : str):
+    async def logsettings_database_warningcollection(self, ctx: commands.Context, Name: str):
         """Set the Warning Collection"""
         try:
             await self.config.guild(ctx.guild).Warning_Collection.set(Name)
@@ -689,7 +855,7 @@ class Logging(commands.Cog):
 
     @logsettings_database.command(name="warnlogcollection")
     @checks.admin()
-    async def logsettings_database_warnlogcollection(self , ctx : commands.Context, Name : str):
+    async def logsettings_database_warnlogcollection(self, ctx: commands.Context, Name: str):
         """Set the Warn Log Collection"""
         try:
             await self.config.guild(ctx.guild).WarnLog_Collection.set(Name)
@@ -699,7 +865,7 @@ class Logging(commands.Cog):
 
     @logsettings_database.command(name="mutecollection")
     @checks.admin()
-    async def logsettings_database_mutecollection(self , ctx : commands.Context, Name : str):
+    async def logsettings_database_mutecollection(self, ctx: commands.Context, Name: str):
         """Set the Mute Collection"""
         try:
             await self.config.guild(ctx.guild).Mute_Collection.set(Name)
@@ -709,7 +875,7 @@ class Logging(commands.Cog):
 
     @logsettings_database.command(name="mutelogcollection")
     @checks.admin()
-    async def logsettings_database_mutelogcollection(self , ctx : commands.Context, Name : str):
+    async def logsettings_database_mutelogcollection(self, ctx: commands.Context, Name: str):
         """Set the Mute Log Collection"""
         try:
             await self.config.guild(ctx.guild).MuteLog_Collection.set(Name)
@@ -719,7 +885,7 @@ class Logging(commands.Cog):
 
     @logsettings_database.command(name="cluster")
     @checks.admin()
-    async def logsettings_database_cluster(self , ctx : commands.Context, ClusterName : str):
+    async def logsettings_database_cluster(self, ctx: commands.Context, ClusterName: str):
         """Set the Cluster"""
         try:
             await self.config.guild(ctx.guild).Cluster.set(ClusterName)
@@ -729,7 +895,7 @@ class Logging(commands.Cog):
 
     @logsettings_database.command(name="playerinfo")
     @checks.admin()
-    async def logsettings_database_playerinfo(self , ctx : commands.Context, Collection : str):
+    async def logsettings_database_playerinfo(self, ctx: commands.Context, Collection: str):
         """Set the PlayerInfo Collection"""
         try:
             await self.config.guild(ctx.guild).PlayerLogs_Collection.set(Collection)
@@ -739,7 +905,7 @@ class Logging(commands.Cog):
 
     @logsettings.command(name="view", aliases=["show"])
     @checks.admin()
-    async def logsettings_database_show(self , ctx):
+    async def logsettings_show(self, ctx):
         """Show the Settings of the Current Database"""
         mongo_url = await self.config.guild(ctx.guild).mongoDB_URL()
         getCluster = await self.config.guild(ctx.guild).Cluster()
@@ -754,27 +920,25 @@ class Logging(commands.Cog):
         adminRole = await self.config.guild(ctx.guild).adminRole()
 
         await ctx.send(f"```MongoDB URL : {mongo_url}\n" +
-        f"Cluster Name : {getCluster}\n" +
-        f"Warn Log Collection: {getWarnLog}\n" +
-        f"Warnings Collection : {getWarnColl}\n" +
-        f"Mute Log Collection : {getMuteLog}\n" +
-        f"Mute Collection : {getMuteColl}\n" +
-        f"Player Info Collection : {getPlayerLog}\n\n" +
-        f"Moderator Role : {modRole}\n" +
-        f"Admin Role : {adminRole}\n\n" +
-        f"SteamAPI Key : {apiToken}```")
-
+                       f"Cluster Name : {getCluster}\n" +
+                       f"Warn Log Collection: {getWarnLog}\n" +
+                       f"Warnings Collection : {getWarnColl}\n" +
+                       f"Mute Log Collection : {getMuteLog}\n" +
+                       f"Mute Collection : {getMuteColl}\n" +
+                       f"Player Info Collection : {getPlayerLog}\n\n" +
+                       f"Moderator Role : {modRole}\n" +
+                       f"Admin Role : {adminRole}\n\n" +
+                       f"SteamAPI Key : {apiToken}```")
 
     @logsettings.group(name="roles")
     @checks.admin()
-    async def logsettings_roles(self , ctx):
+    async def logsettings_roles(self, ctx):
         """Set roles for the Logs"""
         pass
 
-
     @logsettings_roles.command(name="moderator")
     @checks.admin()
-    async def logsettings_roles_moderator(self , ctx : commands.Context , Role : discord.Role):
+    async def logsettings_roles_moderator(self, ctx: commands.Context, Role: discord.Role):
         """Sets the Moderator Role"""
 
         try:
@@ -787,7 +951,7 @@ class Logging(commands.Cog):
 
     @logsettings_roles.command(name="admin")
     @checks.admin()
-    async def logsettings_roles_admin(self , ctx : commands.Context , Role : discord.Role):
+    async def logsettings_roles_admin(self, ctx: commands.Context, Role: discord.Role):
         """Sets the Admin Role"""
 
         try:
