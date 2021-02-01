@@ -1,6 +1,6 @@
 # Steam64 Logging Command
 
-Note : For this version you need to have [Discord-RED] (https://github.com/Cog-Creators/Red-DiscordBot) installed and a bot made.
+Note : For this version you need to have Discord RED installed and a bot made.
 Requirements:
 - MongoDB Atlas Account
 - A brain
